@@ -106,7 +106,7 @@ Capistrano::Configuration.instance.load do
       sky.install.ubuntu_packages
       sky.install.rubygems
       sky.install.basic_gems
-      sky.install.mount_volumes
+      sky.mount_volumes
       sky.write_remote_files
     end
   
@@ -133,7 +133,7 @@ Capistrano::Configuration.instance.load do
     end
     
     desc "Mount EBS volumes"
-    task :mount_volumes, :roles => %w(app), :primary => true do
+    task :mount_volumes, :roles => %w(app), :only => {:primary => true} do
       ec2 = EC2::Base.new(:access_key_id => aws_access_key, :secret_access_key => aws_secret_access_key)
       role = "app"
       sky_instance = sky_instances.find_by_role(role, :primary => true).first
@@ -156,9 +156,9 @@ Capistrano::Configuration.instance.load do
       }
     end
 
-    task :setup_nfs_server, :roles => :app, :primary => true do
+    task :setup_nfs_server, :roles => :app, :only => {:primary => true} do
       run "apt-get install -q -y nfs-common nfs-kernel-server"
-      app_instance = sky_instances.find_by_role("app", :conditions => {:primary => true}).first
+      app_instance = sky_instances.find_by_role("app", :primary => true).first
       ips = sky_instances.map{|sky_instance| sky_instance.internal_ip if sky_instance.internal_ip != app_instance.internal_ip }.compact
       exports = "/vol "
       exports += ips.map{|ip| ip+"(rw)"}.join(" ")
@@ -167,9 +167,9 @@ Capistrano::Configuration.instance.load do
     end
 
     task :setup_nfs_clients do
-      app_instance = sky_instances.find_by_role("app", :conditions => {:primary => true}).first
+      app_instance = sky_instances.find_by_role("app", :primary => true).first
       other_instances = sky_instances.find_all{|sky_instance| sky_instance.internal_ip != app_instance.internal_ip }
-      other_instances.each{|sky_instance|
+      other_instances.reverse.each{|sky_instance|
         dns = sky_instance.hostname
         task_name = "_setup_nfs_client_#{dns.gsub(".", "_")}"
         task task_name.to_sym, :hosts => dns do
@@ -177,6 +177,7 @@ Capistrano::Configuration.instance.load do
           run "mkdir -p /vol"
           fstab = "#{app_instance.internal_ip}:/vol	/vol	nfs	user,noauto	0	0"
           run "echo \"#{fstab}\" >> /etc/fstab"
+          #run "trap \"mount /vol\" 1 2 3"
           run "mount /vol"
         end
         send task_name
@@ -217,7 +218,7 @@ Capistrano::Configuration.instance.load do
         ec2 = EC2::Base.new(:access_key_id => aws_access_key, :secret_access_key => aws_secret_access_key)
       
         new_sky_roles.each{|role_name, total_number_of_hosts|
-          break if total_number_of_hosts < 1
+          next if total_number_of_hosts < 1
           total_number_of_hosts.times{|i|
             create_instance role_name
           }
@@ -268,7 +269,7 @@ Capistrano::Configuration.instance.load do
     namespace :update do
       desc "Update the base packages"
       task :ubuntu_packages do
-        run "export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get -q -y dist-upgrade"
+        run "export DEBIAN_FRONTEND=noninteractive; apt-get autoremove -q -y && apt-get update && apt-get -q -y dist-upgrade"
       end
       
       desc "Update gems"
@@ -287,9 +288,9 @@ Capistrano::Configuration.instance.load do
       desc "Install rubygems"
       task :rubygems do        
         cmd  = "if [ ! -f /usr/bin/gem ]; "
-        cmd += "then wget -qP /tmp http://rubyforge.org/frs/download.php/38646/rubygems-1.2.0.tgz;"
-        cmd += "tar -C /tmp -xzf /tmp/rubygems-1.2.0.tgz;"
-        cmd += "ruby -C /tmp/rubygems-1.2.0 setup.rb;"
+        cmd += "then wget -qP /tmp http://rubyforge.org/frs/download.php/45905/rubygems-1.3.1.tgz;"
+        cmd += "tar -C /tmp -xzf /tmp/rubygems-1.3.1.tgz;"
+        cmd += "ruby -C /tmp/rubygems-1.3.1 setup.rb;"
         cmd += "ln -sf /usr/bin/gem1.8 /usr/bin/gem;"
         cmd += "rm -rf /tmp/rubygems*;"
         cmd += "fi"
@@ -315,12 +316,10 @@ Capistrano::Configuration.instance.load do
     end
   
     def get_instance_config role
-      if configuration_data.nil?
-        configuration_data[role]
-      elsif configuration_data[role].nil?
-        configuration_data
+      if configuration_data["roles"] && configuration_data["roles"][role.to_s]
+        configuration_data.deep_merge configuration_data["roles"][role.to_s]
       else
-        configuration_data.deep_merge configuration_data[role]
+        configuration_data
       end
     end
   
@@ -390,7 +389,7 @@ Capistrano::Configuration.instance.load do
     def get_host_options(key, &block)
       opts = {}
       sky_instances.each{|sky_instance|
-        merging = configuration_data.deep_merge configuration_data["roles"][sky_instance.role.to_s]
+        merging = configuration_data.keep_merge configuration_data["roles"][sky_instance.role.to_s]
         if block
           value = block.call(merging[key])
         end
